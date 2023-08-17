@@ -65,6 +65,22 @@ class utils:
 
     # internal methods to manage state
     def __operating_state_cb(self, msg):
+        last_event_time = self.__ral.get_timestamp(self.__operating_state_data)
+        previous_is_busy = self.__operating_state_data.is_busy
+        event_time = self.__ral.get_timestamp(msg)
+        if event_time > self.__ral.now():
+            print("operating_state event received from future")
+
+        new_data = event_time > last_event_time
+        if not new_data:
+            print("rejecting out-of-order operating state event")
+            return
+
+        if previous_is_busy and not msg.is_busy:
+            self.__is_busy_transition_time = event_time
+        elif msg.is_busy:
+            self.__is_busy_transition_time = None
+
         # crtk operating state contains state as well as homed and busy
         self.__operating_state_data = msg
         # then when all data is saved, release "lock"
@@ -196,25 +212,27 @@ class utils:
         # if timeout is negative, not waiting
         if timeout < 0.0:
             return False
+        
         # set start time to now if not specified
         if start_time is None:
             start_time = self.__ral.now()
         else:
             # user provided start_time, check if an event arrived after start_time
-            last_event_time = self.__ral.get_timestamp(self.__operating_state_data)
-            if (last_event_time > start_time and self.__operating_state_data.is_busy == is_busy):
+            if self.__is_busy_transition_time and (self.__is_busy_transition_time > start_time):
                 return True
 
         # other cases, waiting for an operating_state event
         _start_time = self.__ral.now()
         self.__operating_state_event.clear()
+        self.__is_busy_transition_time = None
+
         in_time = self.__operating_state_event.wait(timeout)
         # past timeout
         if self.__ral.is_shutdown() or not in_time:
             return False
-
+        
         # within timeout and result we expected
-        if self.__operating_state_data.is_busy == is_busy:
+        if self.__is_busy_transition_time and self.__operating_state_data.is_busy == is_busy:
             return True
         else:
             # wait a bit more
@@ -232,6 +250,7 @@ class utils:
         # data
         self.__operating_state_data = crtk_msgs.msg.OperatingState()
         self.__operating_state_event = threading.Event()
+        self.__is_busy_transition_time = None
 
         # create the subscriber/publisher
         self.__operating_state_subscriber = self.__ral.subscriber(
